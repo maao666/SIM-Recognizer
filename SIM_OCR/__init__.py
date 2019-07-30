@@ -6,19 +6,15 @@ $ pip3 install opencv-contrib-python
 """
 
 import cv2
-import glob
 import numpy as np
 import logging
-import pytesseract
 import random
+import os
 from pprint import pprint
-import matplotlib.pyplot as plt
-
-logging.basicConfig(level=logging.INFO)
 
 
 # noinspection PyUnreachableCode
-class SIM_Image(object):
+class SIM_OCR(object):
     _raw_image = None
     _image = None
 
@@ -28,34 +24,27 @@ class SIM_Image(object):
         This method derived from imutils as the background color after rotation
             needs to be white
         """
-        # grab the dimensions of the image and then determine the
-        # center
         (h, w) = image.shape[:2]
         (cX, cY) = (w / 2, h / 2)
-
-        # grab the rotation matrix (applying the negative of the
-        # angle to rotate clockwise), then grab the sine and cosine
-        # (i.e., the rotation components of the matrix)
         M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
         cos = np.abs(M[0, 0])
         sin = np.abs(M[0, 1])
 
-        # compute the new bounding dimensions of the image
         nW = int((h * sin) + (w * cos))
         nH = int((h * cos) + (w * sin))
 
-        # adjust the rotation matrix to take into account translation
         M[0, 2] += (nW / 2) - cX
         M[1, 2] += (nH / 2) - cY
 
-        # perform the actual rotation and return the image
         rotated_image = cv2.warpAffine(
             image, M, (nW, nH), borderValue=(255, 255, 255))
         return rotated_image
 
     def _black_n_white(self):
-        self._image = cv2.adaptiveThreshold(self._image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 105,
-                                            10)
+        logging.debug(
+            "Converting image to black n white with adaptive threshold")
+        self._image = cv2.adaptiveThreshold(self._image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                            cv2.THRESH_BINARY, 105, 10)
 
     @staticmethod
     def _normalize(source, destination):
@@ -86,23 +75,37 @@ class SIM_Image(object):
             cv2.imshow("Current Image", args[0])
         cv2.waitKey(0)
 
+    def _adaptive_resize(self, image, scale_percentage=40):
+        while image.shape[1] > 1500 or image.shape[0] > 960:
+            width = int(image.shape[1] * scale_percentage / 100)
+            height = int(image.shape[0] * scale_percentage / 100)
+            dim = (width, height)
+            # resize image
+            image = cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
+        return image
+
     def __init__(self, image_path: str, load_mode=cv2.IMREAD_GRAYSCALE,
-                 normalization=True):
+                 normalization=True, black_n_white=True, blur=True,
+                 rotation_correction=True, rotation_offset_angle=0):
+        self._image_path = image_path
         self._raw_image = cv2.imread(image_path, 1)
         self._image = cv2.imread(image_path, load_mode)
-
+        self._image = self._adaptive_resize(self._image)
         if normalization:
             self._normalize(self._raw_image, self._image)
-        self._image = cv2.GaussianBlur(
-            self._image, (3, 3), 0, 0, cv2.BORDER_DEFAULT)
-        self._image = cv2.medianBlur(self._image, 5)
-        self._black_n_white()
-        # Need to be replaced
-        # self._image = self._image[:, :int(self._image.shape[1] / 2)]
-        self._rotation_correction(offset_angle=0)
+        if blur:
+            self._image = cv2.GaussianBlur(
+                self._image, (3, 3), 0, 0, cv2.BORDER_DEFAULT)
+            self._image = cv2.medianBlur(self._image, 5)
+        if black_n_white:
+            self._black_n_white()
+        if rotation_correction:
+            self._rotation_correction(rotation_offset_angle)
+
+        self._enlarged_image, self._boxes = self._mser_detection()
 
     def _detect_edge(self):
-        edged = cv2.Canny(self._image, 30, 200)
+        return cv2.Canny(self._image, 30, 200)
 
     def _standardize(self, text: str) -> str:
         text_list = text.splitlines()
@@ -164,12 +167,9 @@ class SIM_Image(object):
             # compute the ratio of overlap
             overlap = (w * h) / area[idxs[:last]]
 
-            # delete all indexes from the index list that have
             idxs = np.delete(idxs, np.concatenate(([last],
                                                    np.where(overlap > overlapThresh)[0])))
 
-        # return only the bounding boxes that were picked using the
-        # integer data type
         return boxes[pick].astype("int")
 
     @staticmethod
@@ -181,7 +181,7 @@ class SIM_Image(object):
         return picked_boxes
 
     @staticmethod
-    def get_overall_overlay_rect(boxes):
+    def _get_overall_overlay_rect(boxes):
         boxes = np.asarray(boxes)
         # Basically the idea is that in order to select the upper-left rectangle,
         # There must be:
@@ -190,15 +190,17 @@ class SIM_Image(object):
         for candidate in boxes:
             boxes_in_row = []
             boxes_in_col = []
-            acceptable_x = (candidate[0] - candidate[2] * 2 / 3, candidate[0] + candidate[2] * 2 / 3)
-            acceptable_y = (candidate[1] - candidate[3] / 2, candidate[1] + candidate[3] / 2)
+            acceptable_x = (candidate[0] - candidate[2]
+                            * 2 / 3, candidate[0] + candidate[2] * 2 / 3)
+            acceptable_y = (candidate[1] - candidate[3] / 2,
+                            candidate[1] + candidate[3] / 2)
             acceptable_w = (candidate[2] * 0.7, candidate[2] * 1.3)  # Obsolete
             acceptable_h = (candidate[3] * 0.7, candidate[3] * 1.3)
             for box in boxes:
-                if box[1] > candidate[1]+candidate[3] and acceptable_x[0] < box[0] < acceptable_x[1] \
+                if box[1] > candidate[1] + candidate[3] and acceptable_x[0] < box[0] < acceptable_x[1] \
                         and acceptable_h[0] < box[3] < acceptable_h[1]:
                     boxes_in_col.append(box)
-                if box[0] > candidate[0]+candidate[2] and acceptable_y[0] < box[1] < acceptable_y[1] \
+                if box[0] > candidate[0] + candidate[2] and acceptable_y[0] < box[1] < acceptable_y[1] \
                         and acceptable_h[0] < box[3] < acceptable_h[1]:
                     boxes_in_row.append(box)
             if len(boxes_in_col) >= 3 and len(boxes_in_row) >= 4:
@@ -208,10 +210,13 @@ class SIM_Image(object):
     @staticmethod
     def _remove_outlier_by_upper_left_rect(boxes, upper_left_rect):
         picked_boxes = []
-        accepted_x_range = (upper_left_rect[0] - upper_left_rect[3]/3, upper_left_rect[0] + upper_left_rect[3] * 3)
-        accepted_y_range = (upper_left_rect[1] - upper_left_rect[3] / 3, upper_left_rect[1] + upper_left_rect[3] * 4)
+        accepted_x_range = (
+            upper_left_rect[0] - upper_left_rect[3] / 3, upper_left_rect[0] + upper_left_rect[3] * 3.5)
+        accepted_y_range = (
+            upper_left_rect[1] - upper_left_rect[3] / 3, upper_left_rect[1] + upper_left_rect[3] * 4)
         for box in boxes:
-            if accepted_x_range[0] < box[0] < accepted_x_range[1] and accepted_y_range[0] < box[1] < accepted_y_range[1]:
+            if accepted_x_range[0] < box[0] < accepted_x_range[1] and accepted_y_range[0] < box[1] < accepted_y_range[
+                1]:
                 picked_boxes.append(box)
         return picked_boxes
 
@@ -270,55 +275,90 @@ class SIM_Image(object):
         return box_matrix
 
     def _failure_detection(self, boxes):
-        if len(boxes) < 20:
-            logging.error("Detection failure: less than 20 digits")
-        if len(boxes) > 20:
-            logging.error("Detection failure: redundant digits")
+        box_num = len(boxes)
+        if box_num != 20:
+            logging.warning(
+                "Result might be inaccurate: {0} detected".format(box_num))
+        else:
+            logging.info("Standby.")
 
     def _mser_detection(self):
         mser = cv2.MSER_create()
+
         enlarged_image = cv2.resize(
             self._image, (self._image.shape[1] * 2, self._image.shape[0] * 2))
+        enlarged_image_raw = self._adaptive_resize(self._raw_image)
+        enlarged_image_raw = cv2.resize(
+            enlarged_image_raw, (enlarged_image_raw.shape[1] * 2, enlarged_image_raw.shape[0] * 2))
+
         regions = mser.detectRegions(enlarged_image)
+
         boxes = self.non_max_suppression_fast(regions[1])
         boxes = self._remove_outliers_by_ratio(boxes)
+
         enlarged_image = cv2.cvtColor(enlarged_image, cv2.COLOR_GRAY2RGB)
-        marked_image = enlarged_image.copy()
-        upper_left_box = self.get_overall_overlay_rect(boxes)
+        marked_image = enlarged_image_raw.copy()
+        upper_left_box = self._get_overall_overlay_rect(boxes)
         boxes = self._remove_outlier_by_upper_left_rect(boxes, upper_left_box)
+
         self._failure_detection(boxes)
         if __debug__:
             x, y, w, h = upper_left_box
-            cv2.rectangle(marked_image, (int(x - h/3), int(y - h/3)), (int(x + h*3.5), int(y + h*4.8)), (100, 0, 242), 3)
+            x1, y1, x2, y2 = int(x - h / 3), int(y - h /
+                                                 3), int(x + h * 4), int(y + h * 4.8)
+            # enlarged_image = cv2.bitwise_not(enlarged_image)
+            marked_image[y1:y2, x1:x2] = enlarged_image[y1:y2, x1:x2]
+
+            cv2.rectangle(marked_image, (x1, y1), (x2, y2), (36, 253, 153), 2)
             # boxes = self._remove_outliers_by_size(boxes)
             for box in boxes:
                 x, y, w, h = box
-                cv2.rectangle(marked_image, (x, y), (x + w, y + h), (50, 240, 50), 3)
+                cv2.rectangle(marked_image, (x, y),
+                              (x + w, y + h), (178, 100, 250), 2)
 
-            cv2.imshow('Image', marked_image)
+            cv2.imshow('Labeled Image', marked_image)
             cv2.waitKey()
             cv2.destroyAllWindows()
 
-        box_matrix = self._get_box_matrix(boxes)
-        return enlarged_image, box_matrix
+        return enlarged_image, boxes
 
     def get_serial(self) -> str:
-        enlarged_image, box_matrix = self._mser_detection()
+        box_matrix = self._get_box_matrix(self._boxes)
         result = ''
         for row in box_matrix:
             for col in row:
-                cv2.imwrite('./dataset/' + str(random.randrange(1000000000)) + '.bmp',
-                            enlarged_image[col[1] - 3:col[1] + col[3] + 3, col[0] - 3:col[0] + col[2] + 3])
+                # Perform recognition
+                pass
         return result
 
+    def save_dataset(self, path='./dataset/', file_format='bmp', offset=3, strict_mode=True,
+                     file_name_correspondence=False):
+        if strict_mode and len(self._boxes) != 20:
+            logging.info("Skipping potentially inaccurate result")
+            return
 
-def _perfcheck():
-    file_list = glob.glob("./source/*.jpg")
-
-    for path in file_list:
-        sim = SIM_Image(path)
-        print(sim.get_serial())
+        box_matrix = self._get_box_matrix(self._boxes)
+        sorted_boxes = []
+        for row in box_matrix:
+            for box in row:
+                sorted_boxes.append(box)
+        for box_index in range(len(sorted_boxes)):
+            if len(path) >= 1 and path[-1] != '/':
+                path = path + '/'
+            if file_name_correspondence:
+                image_name = self._image_path[self._image_path.rfind('/') + 1:]
+                saving_path = '{}{}'.format(path, image_name[box_index])
+                os.makedirs(saving_path, exist_ok=True)
+                saving_name = '{}/{}.{}'.format(saving_path, str(random.randrange(100000000)), file_format)
+            else:
+                saving_name = '{}{}.{}'.format(path, str(random.randrange(100000000)),
+                                               file_format)
+            box = sorted_boxes[box_index]
+            cv2.imwrite(saving_name,
+                        self._enlarged_image[box[1] - offset:box[1] + box[3] + offset,
+                        box[0] - offset:box[0] + box[2] + offset])
 
 
 if __name__ == '__main__':
-    _perfcheck()
+    print("Refer demo.py to get started.")
+    print("See documentation for more details.")
