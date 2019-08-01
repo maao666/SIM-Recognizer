@@ -1,8 +1,21 @@
 """
-SIM Card Recognizer
+SIM Card ICCID Recognizer
 ~~~~~~~~~~~
-Required:
-$ pip3 install opencv-contrib-python
+# Basic Usage:
+    >>> from SIM_OCR import SIM_OCR
+    >>> sim = SIM_OCR('file_path.jpg')
+    >>> print(sim.get_serial())
+
+# Required:
+    $ pip3 install opencv-contrib-python keras
+
+# Getting Dataset:
+    >>> from SIM_OCR import SIM_OCR
+    >>> sim = SIM_OCR('file_path.jpg')
+    >>> sim.save_dataset(path='dataset_folder/')
+    You might want to set file_name_correspondence to
+        true so that the file would be automatically
+        tagged.
 """
 
 import cv2
@@ -12,8 +25,37 @@ import random
 import os
 from pprint import pprint
 
+from keras.models import load_model
+import skimage
+import numpy as np
+
+__author__ = "Ma, Jiaao"
+__version__ = "1.0"
+
+__all__ = ['SIM_OCR']
+
+_CATALOGUE = {0: '0', 1: '1', 2: '2', 3: '3', 4: '4', 5: '5',
+              6: '6', 7: '7', 8: '8', 9: '9', 10: 'A', 11: 'B',
+              12: 'C', 13: 'D', 14: 'E', 15: 'F'}
+
+_DEBUG = False
+
+classifier = load_model('sim_iccid_model.hdf5')
+
+
+def _identify(image):
+    width = 44
+    height = 68
+    channels = 3
+    image = image.reshape(1, width, height, channels)
+
+    catalogue = classifier.predict_classes(image)
+    prediction_result = _CATALOGUE[catalogue[0]]
+    return prediction_result
 
 # noinspection PyUnreachableCode
+
+
 class SIM_OCR(object):
     _raw_image = None
     _image = None
@@ -190,12 +232,13 @@ class SIM_OCR(object):
         for candidate in boxes:
             boxes_in_row = []
             boxes_in_col = []
+
             acceptable_x = (candidate[0] - candidate[2]
                             * 2 / 3, candidate[0] + candidate[2] * 2 / 3)
             acceptable_y = (candidate[1] - candidate[3] / 2,
                             candidate[1] + candidate[3] / 2)
-            acceptable_w = (candidate[2] * 0.7, candidate[2] * 1.3)  # Obsolete
             acceptable_h = (candidate[3] * 0.7, candidate[3] * 1.3)
+
             for box in boxes:
                 if box[1] > candidate[1] + candidate[3] and acceptable_x[0] < box[0] < acceptable_x[1] \
                         and acceptable_h[0] < box[3] < acceptable_h[1]:
@@ -203,6 +246,7 @@ class SIM_OCR(object):
                 if box[0] > candidate[0] + candidate[2] and acceptable_y[0] < box[1] < acceptable_y[1] \
                         and acceptable_h[0] < box[3] < acceptable_h[1]:
                     boxes_in_row.append(box)
+
             if len(boxes_in_col) >= 3 and len(boxes_in_row) >= 4:
                 break
         return candidate
@@ -216,7 +260,7 @@ class SIM_OCR(object):
             upper_left_rect[1] - upper_left_rect[3] / 3, upper_left_rect[1] + upper_left_rect[3] * 4)
         for box in boxes:
             if accepted_x_range[0] < box[0] < accepted_x_range[1] and accepted_y_range[0] < box[1] < accepted_y_range[
-                1]:
+                    1]:
                 picked_boxes.append(box)
         return picked_boxes
 
@@ -302,7 +346,7 @@ class SIM_OCR(object):
         boxes = self._remove_outlier_by_upper_left_rect(boxes, upper_left_box)
 
         self._failure_detection(boxes)
-        if __debug__:
+        if _DEBUG:
             x, y, w, h = upper_left_box
             x1, y1, x2, y2 = int(x - h / 3), int(y - h /
                                                  3), int(x + h * 4), int(y + h * 4.8)
@@ -322,17 +366,47 @@ class SIM_OCR(object):
 
         return enlarged_image, boxes
 
-    def get_serial(self) -> str:
+    def get_serial(self, offset=3) -> str:
+        """
+        Get ICCID
+        ~~~~~~
+        - returns a string containing the ICCID of the sim card
+
+        - offset means how many additional pixels should be cropped
+        outside each symbol rectangle
+        """
         box_matrix = self._get_box_matrix(self._boxes)
         result = ''
         for row in box_matrix:
-            for col in row:
+            for box in row:
+                image = self._enlarged_image[box[1] - offset:box[1] + box[3] + offset,
+                                             box[0] - offset:box[0] + box[2] + offset]
                 # Perform recognition
-                pass
+                image = cv2.resize(image, (68, 44))
+                result = result + _identify(image)
         return result
 
     def save_dataset(self, path='./dataset/', file_format='bmp', offset=3, strict_mode=True,
                      file_name_correspondence=False):
+        """
+        Extract digits and save to dataset
+        ~~~~~~
+        - Extracts each digit to a folder containing the dataset
+        The folder will be created if it does not exist
+
+        - offset means how many additional pixels should be cropped
+        outside each symbol rectangle
+
+        - strict_mode means the dataset will be saved if and only if
+        there are exactly 20 digits being recognized to 
+        improve accuracy
+
+        - file_name_correspondence can be enabled when the file
+        name is exactly the ICCID such as 
+        '898600B5151770173671.jpg', where all letters should
+        be in upper-case. This is helpful for tagging images.
+        Random file names would be used otherwise.
+        """
         if strict_mode and len(self._boxes) != 20:
             logging.info("Skipping potentially inaccurate result")
             return
@@ -349,14 +423,15 @@ class SIM_OCR(object):
                 image_name = self._image_path[self._image_path.rfind('/') + 1:]
                 saving_path = '{}{}'.format(path, image_name[box_index])
                 os.makedirs(saving_path, exist_ok=True)
-                saving_name = '{}/{}.{}'.format(saving_path, str(random.randrange(100000000)), file_format)
+                saving_name = '{}/{}.{}'.format(saving_path,
+                                                str(random.randrange(100000000)), file_format)
             else:
                 saving_name = '{}{}.{}'.format(path, str(random.randrange(100000000)),
                                                file_format)
             box = sorted_boxes[box_index]
             cv2.imwrite(saving_name,
                         self._enlarged_image[box[1] - offset:box[1] + box[3] + offset,
-                        box[0] - offset:box[0] + box[2] + offset])
+                                             box[0] - offset:box[0] + box[2] + offset])
 
 
 if __name__ == '__main__':
