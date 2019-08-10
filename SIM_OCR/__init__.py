@@ -23,7 +23,10 @@ import numpy as np
 import logging
 import random
 import os
+from io import BytesIO
 from pprint import pprint
+import imageio
+from PIL import Image
 
 from keras.models import load_model
 import skimage
@@ -42,10 +45,13 @@ _DEBUG = False
 
 classifier = load_model('sim_iccid_model.hdf5')
 
+# To make the model available for multiple threads
+classifier._make_predict_function()
+
 
 def _identify(image):
-    width = 44
-    height = 68
+    width = 60
+    height = 90
     channels = 3
     image = image.reshape(1, width, height, channels)
 
@@ -59,6 +65,10 @@ def _identify(image):
 class SIM_OCR(object):
     _raw_image = None
     _image = None
+    _boxes = None
+    _enlarged_image = None
+    _normalized_image = None
+    _has_failed = False
 
     @staticmethod
     def _rotate_bound(image, angle):
@@ -82,16 +92,18 @@ class SIM_OCR(object):
             image, M, (nW, nH), borderValue=(255, 255, 255))
         return rotated_image
 
-    def _black_n_white(self):
+    def _adaptive_black_n_white(self, raw_image, block_size=205, c_const=50):
         logging.debug(
             "Converting image to black n white with adaptive threshold")
-        self._image = cv2.adaptiveThreshold(self._image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                            cv2.THRESH_BINARY, 105, 10)
+        self._image = cv2.adaptiveThreshold(raw_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                            cv2.THRESH_BINARY, block_size, c_const)
+        if _DEBUG:
+            self.show_image()
 
     @staticmethod
-    def _normalize(source, destination):
+    def _normalize(source):
         logging.debug("Performing normalization")
-        destination = cv2.normalize(
+        return cv2.normalize(
             source, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
 
     @staticmethod
@@ -103,14 +115,14 @@ class SIM_OCR(object):
         coords = np.column_stack(np.where(thresh > 0))
         return cv2.minAreaRect(coords)
 
-    def _rotation_correction(self, offset_angle=0):
+    def _correct_angle(self, offset_angle=0):
         logging.debug("Performing rotational correction")
         angle = self._get_minimum_area_rectangle(self._image)[-1]
         self._image = self._rotate_bound(self._image, angle)
         if self._image.shape[0] > self._image.shape[1]:
             self._image = self._rotate_bound(self._image, 90)
 
-    def show_current_image(self, *args):
+    def show_image(self, *args):
         if len(args) == 0:
             cv2.imshow("Current Image", self._image)
         else:
@@ -126,36 +138,71 @@ class SIM_OCR(object):
             image = cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
         return image
 
-    def __init__(self, image_path: str, load_mode=cv2.IMREAD_GRAYSCALE,
+    '''
+    Brief instruction on solving over-splitting issue
+    ~~~~~~
+    The idea is that, to change blur dadius until 20 boxes are
+    detected.
+    '''
+
+    def _find_the_best_image(self):
+        results = []
+        if self._normalization:
+            self._normalized_image = self._normalize(self._image)
+        for radius in range(1, 25, 4):
+            logging.info("Trying with radius {}".format(str(radius)))
+            if self._blur and radius > 1:
+                temp_image = cv2.GaussianBlur(
+                    self._normalized_image, (3, 3), 0, 0, cv2.BORDER_DEFAULT)
+                temp_image = cv2.medianBlur(temp_image, radius)
+            else:
+                temp_image = self._normalized_image
+            if self._black_n_white:
+                for c in range(10, 64, 16):
+                    self._adaptive_black_n_white(
+                        temp_image, block_size=205, c_const=c)
+                    if self._rotation_correction:
+                        self._correct_angle(self._rotation_offset_angle)
+                    try:
+                        enlarged_image, boxes = self._mser_detection()
+                    except Exception:
+                        logging.info(
+                            "MSER detection has encountered an internal error")
+                        continue
+                    if len(boxes) == 20:
+                        self._boxes = boxes
+                        self._enlarged_image = enlarged_image
+                        return
+                    results.append((enlarged_image, boxes))
+            else:
+                self._image = temp_image
+        # So far the detection has almost failed
+        # Returning the best result
+        if len(results) > 0:
+            results = sorted(results, key=lambda x: abs(20 - len(x[1])))
+            self._enlarged_image, self._boxes = results[0][0], results[0][1]
+
+    def __init__(self, image, load_mode=cv2.IMREAD_GRAYSCALE,
                  normalization=True, black_n_white=True, blur=True,
                  rotation_correction=True, rotation_offset_angle=0):
-        self._image_path = image_path
-        self._raw_image = cv2.imread(image_path, 1)
-        self._image = cv2.imread(image_path, load_mode)
+        if isinstance(image, str):
+            self._image_path = image
+            self._raw_image = cv2.imread(image, 1)
+            self._image = cv2.imread(image, load_mode)
+        elif isinstance(image, np.ndarray):
+            self._raw_image = image
+            self._image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            logging.error("Unknown argument type")
+
         self._image = self._adaptive_resize(self._image)
-        if normalization:
-            self._normalize(self._raw_image, self._image)
-        if blur:
-            self._image = cv2.GaussianBlur(
-                self._image, (3, 3), 0, 0, cv2.BORDER_DEFAULT)
-            self._image = cv2.medianBlur(self._image, 5)
-        if black_n_white:
-            self._black_n_white()
-        if rotation_correction:
-            self._rotation_correction(rotation_offset_angle)
-
-        self._enlarged_image, self._boxes = self._mser_detection()
-
-    def _detect_edge(self):
-        return cv2.Canny(self._image, 30, 200)
-
-    def _standardize(self, text: str) -> str:
-        text_list = text.splitlines()
-        result = ''
-        for text_iter in text_list:
-            if text_iter.strip() != '':
-                result = '{0}{1}\n'.format(result, text_iter)
-        return result.strip()
+        self._normalization = normalization
+        self._blur = blur
+        self._black_n_white = black_n_white
+        self._rotation_correction = rotation_correction
+        self._rotation_offset_angle = rotation_offset_angle
+        self._find_the_best_image()
+        cv2.imwrite("./temp.jpg", self._raw_image)
 
     @staticmethod
     def non_max_suppression_fast(boxes, overlapThresh=0.1):
@@ -229,6 +276,10 @@ class SIM_OCR(object):
         # There must be:
         # * 3 rects with SIMILAR x and LARGER y appending to same_col
         # * AND 4 rects with SIMILAR y and LARGER x appending to same_row
+        if len(boxes) == 0:
+            logging.info("No candidate box found!")
+            return
+
         for candidate in boxes:
             boxes_in_row = []
             boxes_in_col = []
@@ -323,8 +374,10 @@ class SIM_OCR(object):
         if box_num != 20:
             logging.warning(
                 "Result might be inaccurate: {0} detected".format(box_num))
+            return True
         else:
             logging.info("Standby.")
+            return False
 
     def _mser_detection(self):
         mser = cv2.MSER_create()
@@ -345,7 +398,6 @@ class SIM_OCR(object):
         upper_left_box = self._get_overall_overlay_rect(boxes)
         boxes = self._remove_outlier_by_upper_left_rect(boxes, upper_left_box)
 
-        self._failure_detection(boxes)
         if _DEBUG:
             x, y, w, h = upper_left_box
             x1, y1, x2, y2 = int(x - h / 3), int(y - h /
@@ -366,7 +418,7 @@ class SIM_OCR(object):
 
         return enlarged_image, boxes
 
-    def get_serial(self, offset=3) -> str:
+    def get_serial(self, offset=3, strict_mode=True) -> str:
         """
         Get ICCID
         ~~~~~~
@@ -374,20 +426,30 @@ class SIM_OCR(object):
 
         - offset means how many additional pixels should be cropped
         outside each symbol rectangle
+
+        - Setting strict_mode to True would return "failed" once
+        less than 20 boxes are detected
         """
-        box_matrix = self._get_box_matrix(self._boxes)
-        result = ''
-        for row in box_matrix:
-            for box in row:
-                image = self._enlarged_image[box[1] - offset:box[1] + box[3] + offset,
-                                             box[0] - offset:box[0] + box[2] + offset]
-                # Perform recognition
-                image = cv2.resize(image, (68, 44))
-                result = result + _identify(image)
+        if strict_mode and self._failure_detection(self._boxes):
+            return "failed"
+
+        try:
+            box_matrix = self._get_box_matrix(self._boxes)
+            result = ''
+            for row in box_matrix:
+                for box in row:
+                    image = self._enlarged_image[box[1] - offset:box[1] + box[3] + offset,
+                                                 box[0] - offset:box[0] + box[2] + offset]
+                    # Perform recognition
+                    image = cv2.resize(image, (90, 60))  # TODO
+                    result = result + _identify(image)
+        except Exception as e:
+            print(e)
+            return "failed"
         return result
 
-    def save_dataset(self, path='./dataset/', file_format='bmp', offset=3, strict_mode=True,
-                     file_name_correspondence=False):
+    def save_dataset(self, path='./dataset/', file_format='bmp', offset=3,
+                     strict_mode=True, file_name_correspondence=False):
         """
         Extract digits and save to dataset
         ~~~~~~
@@ -407,8 +469,12 @@ class SIM_OCR(object):
         be in upper-case. This is helpful for tagging images.
         Random file names would be used otherwise.
         """
-        if strict_mode and len(self._boxes) != 20:
-            logging.info("Skipping potentially inaccurate result")
+        try:
+            if strict_mode and len(self._boxes) != 20:
+                logging.info("Skipping potentially inaccurate result")
+                return
+        except TypeError:
+            logging.info("Skipping potentially invalid result")
             return
 
         box_matrix = self._get_box_matrix(self._boxes)

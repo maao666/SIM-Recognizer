@@ -1,6 +1,8 @@
 {
     "python.pythonPath": "/usr/local/bin/python3",
     "python.linting.pylintEnabled": false,
-    "python.linting.pep8Enabled": true,
-    "python.linting.enabled": true
+    "python.linting.pep8Enabled": false,
+    "python.linting.enabled": true,
+    "git.ignoreLimitWarning": true,
+    "python.linting.flake8Enabled": true
 }

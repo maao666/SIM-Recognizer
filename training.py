@@ -14,8 +14,8 @@ from keras.layers import Dense
 
 path = './dataset/'
 
-w = 44
-h = 68
+w = 60
+h = 90
 c = 3
 
 
@@ -39,6 +39,7 @@ def read_image(path):
 
     return np.asarray(imgs, np.float32), np.asarray(labels, np.int32)
 
+
 data, label = read_image(path)
 
 print(data[0])
@@ -47,7 +48,7 @@ print(len(label))
 
 
 train_x, test_x, train_y, test_y = train_test_split(
-    data, label, test_size=0.33, random_state=123)
+    data, label, test_size=0.33, random_state=4553)
 
 print(train_x.shape)
 print(test_x.shape)
@@ -62,7 +63,7 @@ print(train_y[0])
 
 classifier = Sequential()
 classifier.add(Conv2D(filters=32, kernel_size=(3, 3),
-                      padding='same', input_shape=(44, 68, 3),
+                      padding='same', input_shape=(w, h, c),
                       activation='relu'))
 
 classifier.add(MaxPooling2D(pool_size=(2, 2)))
@@ -77,7 +78,12 @@ classifier.add(Dense(units=16, activation='softmax'))
 classifier.compile(
     optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
+filepath = "sim_iccid_model_{epoch:03d}_{val_acc:.4f}.hdf5"
+
+checkpointer = keras.callbacks.ModelCheckpoint(filepath, monitor='val_loss', verbose=1,
+                                               save_best_only=False, save_weights_only=False, mode='auto', period=1)
+
 classifier.fit(train_x, train_y, batch_size=30,
-               epochs=30, validation_data=(test_x, test_y))
+               epochs=32, validation_data=(test_x, test_y), callbacks=[checkpointer])
 classifier.save('sim_iccid_model.hdf5')
 print('Model saved')
