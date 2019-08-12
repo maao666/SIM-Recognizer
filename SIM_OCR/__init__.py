@@ -23,14 +23,7 @@ import numpy as np
 import logging
 import random
 import os
-from io import BytesIO
-from pprint import pprint
-import imageio
-from PIL import Image
-
 from keras.models import load_model
-import skimage
-import numpy as np
 
 __author__ = "Ma, Jiaao"
 __version__ = "1.0"
