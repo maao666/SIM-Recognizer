@@ -10,7 +10,7 @@ WSGI Server For SIM OCR
     the ICCID of the image, writting an image file
     to disk. The path depends on different OS
 '''
-from os import urandom
+import os
 from gevent.pywsgi import WSGIServer
 from gevent import monkey
 monkey.patch_all()  # noqa: E702
@@ -21,9 +21,10 @@ import base64
 import logging
 from SIM_OCR import SIM_OCR
 import sys
+from datetime import datetime
 
 app = flask.Flask(__name__)
-app.secret_key = urandom(24)
+app.secret_key = os.urandom(24)
 
 LISTEN_TO = ('0.0.0.0', 1012)
 
@@ -61,6 +62,9 @@ def collect():
                 directory = "/collection"
             else:
                 directory = "./collection"
+            directory = '{0}/{1}'.format(directory, str(datetime.now().date()))
+            if not os.path.exists(directory):
+                os.makedirs(directory)
             with open("{0}/{1}.jpg".format(directory, iccid_str), "wb") as fh:
                 fh.write(base64.decodestring(str.encode(image_b64_str)))
 
