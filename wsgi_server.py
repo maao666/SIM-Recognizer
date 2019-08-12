@@ -1,25 +1,36 @@
 '''
-Flask Wrapper For SIM OCR
+WSGI Server For SIM OCR
 ~~~~~~
-To run this app, simply run the following code
-in your terminal
+# Routes:
 
-$ export FLASK_APP=flask_wrapper.py
-$ flask run
+- 'recognize' receives a POST request containing base64
+    encoding of the image and returns an ICCID
+
+- 'collect' receives a POST containing both base64 and
+    the ICCID of the image, writting an image file
+    to disk. The path depends on different OS
 '''
+from os import urandom
+from gevent.pywsgi import WSGIServer
+from gevent import monkey
+monkey.patch_all()  # noqa: E702
 import flask
 import cv2
 import numpy as np
 import base64
 import logging
 from SIM_OCR import SIM_OCR
+import sys
 
 app = flask.Flask(__name__)
+app.secret_key = urandom(24)
+
+LISTEN_TO = ('0.0.0.0', 1012)
 
 
-def readb64(encoded_data):
-    nparr = np.fromstring(base64.b64decode(encoded_data), np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+def convert_base64(encoded_base64: str):
+    numpy_array = np.fromstring(base64.b64decode(encoded_base64), np.uint8)
+    img = cv2.imdecode(numpy_array, cv2.IMREAD_COLOR)
     return img
 
 
@@ -30,7 +41,7 @@ def recognize():
     except Exception:
         return "failed"
 
-    image = readb64(image_b64_str)
+    image = convert_base64(image_b64_str)
     sim = SIM_OCR(image, rotation_correction=False)
     serial = sim.get_serial(strict_mode=True)
 
@@ -46,7 +57,11 @@ def collect():
         iccid_str = flask.request.form["ICCID"].upper()
 
         if len(iccid_str) == 20:
-            with open("./{0}.jpg".format(iccid_str), "wb") as fh:
+            if sys.platform == "linux" or sys.platform == "linux2":
+                directory = "/collection"
+            else:
+                directory = "./collection"
+            with open("{0}/{1}.jpg".format(directory, iccid_str), "wb") as fh:
                 fh.write(base64.decodestring(str.encode(image_b64_str)))
 
             logging.info("Saved ./{0}.jpg as dataset".format(iccid_str))
@@ -59,12 +74,6 @@ def collect():
 
 
 if __name__ == '__main__':
-    instruction = '''
-Nah, this is not the right way to launch me.
-To start the SIM OCR service, simply run:
-
-    $ export FLASK_APP=flask_wrapper.py && flask run
-
-in your shell
-'''
-    print(instruction)
+    logging.info("Starting WSGI Server")
+    http_server = WSGIServer(LISTEN_TO, app)
+    http_server.serve_forever()

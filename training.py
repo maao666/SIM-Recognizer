@@ -48,7 +48,7 @@ print(len(label))
 
 
 train_x, test_x, train_y, test_y = train_test_split(
-    data, label, test_size=0.33, random_state=4553)
+    data, label, test_size=0.33, random_state=4572)
 
 print(train_x.shape)
 print(test_x.shape)
