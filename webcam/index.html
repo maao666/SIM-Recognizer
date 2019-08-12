@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>GET VIDEO</title>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="/static/blog/css/home_site.css">
+    <link rel="stylesheet" href="/static/blog/css/article_detail.css">
+    <link rel="stylesheet" href="/static/blog/bs/css/bootstrap.css">
+</head>
+
+<body>
+    <input type="button" title="开启摄像头" value="开启摄像头" onclick="getMedia()" />
+    <video id="video" width="500px" height="500px" autoplay="autoplay"></video>
+    <canvas id="canvas" width="500px" height="500px"></canvas>
+    <button id="snap" onclick="takePhoto()">识别</button>
+    <div><span class="msg"></span></div>
+    {#    <span class="msg"></span>#}
+
+    <script src="https://code.jquery.com/jquery-3.4.1.min.js"></script>
+    <script>
+        function getMedia() {
+            let constraints = {
+                video: {
+                    width: 500,
+                    height: 500
+                },
+                audio: true
+            };
+            //获得video摄像头区域
+            let video = document.getElementById("video");
+            //这里介绍新的方法，返回一个 Promise对象
+            // 这个Promise对象返回成功后的回调函数带一个 MediaStream 对象作为其参数
+            // then()是Promise对象里的方法
+            // then()方法是异步执行，当then()前的方法执行完后再执行then()内部的程序
+            // 避免数据没有获取到
+            let promise = navigator.mediaDevices.getUserMedia(constraints);
+            promise.then(function (MediaStream) {
+                video.srcObject = MediaStream;
+                video.play();
+            });
+        }
+
+        function takePhoto() {
+            //获得Canvas对象
+
+            let video = document.getElementById("video");
+            let canvas = document.getElementById("canvas");
+            let ctx = canvas.getContext('2d'); 
+                // https: //blog.csdn.net/ztop_f/article/details/53219275
+
+                    ctx.drawImage(video, 0, 0, 500, 500);
+                var base64Data = canvas.toDataURL('image/png', 1.0);
+                console.log(base64Data);
+                var fd = new FormData();
+                fd.append("image_b64", base64Data); //fileData为自定义
+                submit(fd);
+
+            }
+
+            function submit(fd) {
+
+                var im = fd;
+
+                $.ajax({
+                    url: "http://localhost:1012/recognize",
+                    type: "post",
+                    data: im,
+                    processData: false, // jQuery不要去处理发送的数据
+                    contentType: false,
+                    success: function (data) {
+                        console.log(data);
+                            $('.msg').text(data).css({
+                                'color': 'blue',
+                                "margin-left": '600px'
+                            })
+
+                    }
+                })
+
+            }
+
+            function dataURItoBlob(base64Data) {
+                var byteString;
+                if (base64Data.split(',')[0].indexOf('base64') >= 0)
+                    byteString = atob(base64Data.split(',')[1]);
+                else
+                    byteString = unescape(base64Data.split(',')[1]);
+                var mimeString = base64Data.split(',')[0].split(':')[1].split(';')[0];
+                var ia = new Uint8Array(byteString.length);
+                for (var i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                }
+                return new Blob([ia], {
+                    type: mimeString
+                });
+            }
+    </script>
+</body>
+
+</html>

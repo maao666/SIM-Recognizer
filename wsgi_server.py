@@ -27,6 +27,7 @@ app = flask.Flask(__name__)
 app.secret_key = os.urandom(24)
 
 LISTEN_TO = ('0.0.0.0', 1012)
+logging.basicConfig(level=logging.INFO)
 
 
 def convert_base64(encoded_base64: str):
@@ -41,12 +42,14 @@ def recognize():
         image_b64_str = flask.request.form["image_b64"]
     except Exception:
         return "failed"
-
+    if image_b64_str[0:30].find("data:image/png;base64,") != -1:
+        image_b64_str = image_b64_str[image_b64_str.find(",") + 1:]
     image = convert_base64(image_b64_str)
     sim = SIM_OCR(image, rotation_correction=False)
     serial = sim.get_serial(strict_mode=True)
 
     logging.info("Returning serial from remote image: " + serial)
+    print("Returning serial from remote image: " + serial)
 
     return serial
 
