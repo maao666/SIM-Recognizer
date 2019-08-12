@@ -195,7 +195,6 @@ class SIM_OCR(object):
         self._rotation_correction = rotation_correction
         self._rotation_offset_angle = rotation_offset_angle
         self._find_the_best_image()
-        cv2.imwrite("./temp.jpg", self._raw_image)
 
     @staticmethod
     def non_max_suppression_fast(boxes, overlapThresh=0.1):
