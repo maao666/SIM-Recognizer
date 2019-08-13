@@ -36,6 +36,11 @@ def convert_base64(encoded_base64: str):
     return img
 
 
+@app.route('/webcam')
+def webcam():
+    return flask.render_template("index.html")
+
+
 @app.route('/recognize', methods=['POST'])
 def recognize():
     try:

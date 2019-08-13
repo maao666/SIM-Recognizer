@@ -4,9 +4,6 @@
 <head>
     <title>GET VIDEO</title>
     <meta charset="utf-8">
-    <link rel="stylesheet" href="/static/blog/css/home_site.css">
-    <link rel="stylesheet" href="/static/blog/css/article_detail.css">
-    <link rel="stylesheet" href="/static/blog/bs/css/bootstrap.css">
 </head>
 
 <body>
@@ -20,10 +17,11 @@
     <script src="https://code.jquery.com/jquery-3.4.1.min.js"></script>
     <script>
         function getMedia() {
+            console.log("Enabling video");
             let constraints = {
                 video: {
-                    width: 500,
-                    height: 500
+                    width: 300,
+                    height: 300
                 },
                 audio: true
             };
@@ -49,7 +47,7 @@
             let ctx = canvas.getContext('2d'); 
                 // https: //blog.csdn.net/ztop_f/article/details/53219275
 
-                    ctx.drawImage(video, 0, 0, 500, 500);
+                    ctx.drawImage(video, 0, 0, 300, 300);
                 var base64Data = canvas.toDataURL('image/png', 1.0);
                 console.log(base64Data);
                 var fd = new FormData();
@@ -63,7 +61,7 @@
                 var im = fd;
 
                 $.ajax({
-                    url: "http://localhost:1012/recognize",
+                    url: "http://masonaas.dscloud.biz:1012/recognize",
                     type: "post",
                     data: im,
                     processData: false, // jQuery不要去处理发送的数据
